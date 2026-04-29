@@ -1,0 +1,13 @@
+# Build files
+colsh
+test_phase1
+*.o
+
+# Temp / test dirs
+warehouse/
+tmp/
+*.log
+
+# OS / editor
+.DS_Store
+*.swp
