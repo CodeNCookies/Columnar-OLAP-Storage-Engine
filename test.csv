@@ -1,0 +1,7 @@
+id,date,country,category,product_id,quantity,price
+1,20240115,Germany,Books,7712,2,34.50
+2,20240322,USA,Electronics,4531,1,120.00
+3,20240110,Germany,Books,8890,5,15.75
+4,20240508,UK,Clothing,3321,3,45.00
+5,20240130,USA,Electronics,2100,2,89.99
+

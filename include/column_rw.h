@@ -5,9 +5,27 @@
 #include <vector>
 #include <variant>
 #include <functional>
+#include <unordered_map>
 
 // A single decoded cell value.
 using Value = std::variant<int32_t, int64_t, double, std::string>;
+
+// ── Encoding helpers ──────────────────────────────────────────────────────────
+
+// Count distinct strings in a column. Returns the map string->id and count.
+std::unordered_map<std::string, uint32_t> build_dict_map(const std::vector<Value>& values);
+uint64_t count_distinct(const std::vector<Value>& values);
+
+// Check if dictionary encoding is worth it (≤ 65535 distinct strings).
+bool should_use_dict(const std::vector<Value>& values, DataType type);
+
+// Count runs in a numeric column. Returns number of (value, run_length) pairs.
+uint64_t count_runs(const std::vector<Value>& values);
+
+// Check if RLE is worth it (runs < N/4).
+bool should_use_rle(const std::vector<Value>& values, DataType type, uint64_t N);
+
+// ── I/O ───────────────────────────────────────────────────────────────────────
 
 // Write one column to disk in binary format.
 // values must all match the type in meta.

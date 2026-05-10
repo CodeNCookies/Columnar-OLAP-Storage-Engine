@@ -37,15 +37,46 @@ bool load_table(const std::string& csv_path,
         for (size_t c = 0; c < num_cols; ++c)
             raw[c].push_back(csv.rows[r][c]);
 
-    // ── Infer types and build schema ──────────────────────────────────────────
+    // ── Convert raw strings to typed Values (done once for all columns) ───────
+    // Also infer types at the same time.
+    std::vector<std::vector<Value>> typed_cols(num_cols);
+    std::vector<DataType> types(num_cols);
+
+    for (size_t c = 0; c < num_cols; ++c) {
+        types[c] = infer_type(raw[c]);
+        typed_cols[c].reserve(num_rows);
+        for (const auto& s : raw[c]) {
+            Value v;
+            if (!parse_value(s, types[c], v)) {
+                switch (types[c]) {
+                    case DataType::INT32:  v = (int32_t)0; break;
+                    case DataType::INT64:  v = (int64_t)0; break;
+                    case DataType::DOUBLE: v = 0.0; break;
+                    case DataType::STRING: v = std::string(""); break;
+                }
+            }
+            typed_cols[c].push_back(v);
+        }
+    }
+
+    // ── Choose encoding for each column ───────────────────────────────────────
     TableSchema schema;
     schema.table_name = table_name;
 
     for (size_t c = 0; c < num_cols; ++c) {
         ColumnMeta meta;
-        meta.name     = csv.headers[c];
-        meta.type     = infer_type(raw[c]);
-        meta.encoding = Encoding::NONE;   // Phase 1: always raw
+        meta.name = csv.headers[c];
+        meta.type = types[c];
+
+        // Phase 2: automatic encoding selection
+        if (should_use_dict(typed_cols[c], meta.type)) {
+            meta.encoding = Encoding::DICT;
+        } else if (should_use_rle(typed_cols[c], meta.type, num_rows)) {
+            meta.encoding = Encoding::RLE;
+        } else {
+            meta.encoding = Encoding::NONE;
+        }
+
         schema.columns.push_back(meta);
     }
 
@@ -63,24 +94,7 @@ bool load_table(const std::string& csv_path,
     for (size_t c = 0; c < num_cols; ++c) {
         const auto& meta = schema.columns[c];
 
-        // Convert raw strings to typed Values
-        std::vector<Value> values;
-        values.reserve(num_rows);
-        for (const auto& s : raw[c]) {
-            Value v;
-            if (!parse_value(s, meta.type, v)) {
-                // Fallback: store as empty/zero for bad conversions
-                switch (meta.type) {
-                    case DataType::INT32:  v = (int32_t)0; break;
-                    case DataType::INT64:  v = (int64_t)0; break;
-                    case DataType::DOUBLE: v = 0.0; break;
-                    case DataType::STRING: v = std::string(""); break;
-                }
-            }
-            values.push_back(v);
-        }
-
-        if (!write_column(tbl_dir, meta, values)) return false;
+        if (!write_column(tbl_dir, meta, typed_cols[c])) return false;
 
         uint64_t sz = file_size(tbl_dir + "/" + meta.name + ".col");
         total_bytes += sz;

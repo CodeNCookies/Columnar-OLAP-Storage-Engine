@@ -1,0 +1,12 @@
+id,date,country,category,product_id,quantity,price
+1,20240101,Germany,Books,100,2,10.00
+2,20240101,Germany,Books,100,2,10.00
+3,20240101,Germany,Books,100,2,10.00
+4,20240102,Germany,Books,100,2,10.00
+5,20240102,Germany,Books,100,2,10.00
+6,20240102,Germany,Books,100,2,10.00
+7,20240103,USA,Electronics,200,1,50.00
+8,20240103,USA,Electronics,200,1,50.00
+9,20240104,USA,Electronics,200,1,50.00
+10,20240104,USA,Electronics,200,1,50.00
+
