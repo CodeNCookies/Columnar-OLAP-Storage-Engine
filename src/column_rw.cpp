@@ -9,8 +9,6 @@
 #include <set>
 #include <algorithm>
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 static std::string col_path(const std::string& dir, const std::string& name) {
     return dir + "/" + name + ".col";
 }
@@ -25,13 +23,13 @@ static bool read_pod(std::ifstream& f, T& v) {
     return static_cast<bool>(f.read(reinterpret_cast<char*>(&v), sizeof(T)));
 }
 
-// ── Type inference ────────────────────────────────────────────────────────────
-
 DataType infer_type(const std::vector<std::string>& vals) {
     bool all_int32 = true, all_int64 = true, all_double = true;
+    bool has_dot = false;
 
     for (const auto& s : vals) {
         if (s.empty()) continue;
+        if (s.find('.') != std::string::npos) has_dot = true;
         if (all_int32) {
             try { std::stoi(s); }
             catch (...) { all_int32 = false; }
@@ -46,6 +44,7 @@ DataType infer_type(const std::vector<std::string>& vals) {
         }
     }
 
+    if (has_dot && all_double) return DataType::DOUBLE;
     if (all_int32)  return DataType::INT32;
     if (all_int64)  return DataType::INT64;
     if (all_double) return DataType::DOUBLE;
@@ -91,8 +90,6 @@ std::string value_to_string(const Value& v) {
     }, v);
 }
 
-// ── Encoding helpers ──────────────────────────────────────────────────────────
-
 std::unordered_map<std::string, uint32_t> build_dict_map(const std::vector<Value>& values) {
     std::unordered_map<std::string, uint32_t> mapping;
     uint32_t next_id = 0;
@@ -136,8 +133,6 @@ bool should_use_rle(const std::vector<Value>& values, DataType type, uint64_t N)
     return count_runs(values) < N / 4;
 }
 
-// ── Writer ────────────────────────────────────────────────────────────────────
-
 bool write_column(const std::string& dir,
                   const ColumnMeta& meta,
                   const std::vector<Value>& values) {
@@ -151,11 +146,10 @@ bool write_column(const std::string& dir,
     }
 
     std::ostringstream data_buf;
-    std::ostringstream dict_buf;  // only used for DICT encoding
+    std::ostringstream dict_buf;
     uint64_t dict_size = 0;
 
     switch (meta.encoding) {
-        // ── No encoding ──────────────────────────────────────────────────
         case Encoding::NONE: {
             for (const auto& val : values) {
                 switch (meta.type) {
@@ -186,15 +180,11 @@ bool write_column(const std::string& dir,
             break;
         }
 
-        // ── Dictionary encoding ──────────────────────────────────────────
         case Encoding::DICT: {
             auto mapping = build_dict_map(values);
             uint32_t D = mapping.size();
-
-            // Pick smallest ID width: 1 or 2 bytes
             bool use_1byte = (D <= 256);
 
-            // Write IDs
             for (const auto& val : values) {
                 const std::string& s = std::get<std::string>(val);
                 uint32_t id = mapping[s];
@@ -207,12 +197,9 @@ bool write_column(const std::string& dir,
                 }
             }
 
-            // Build dictionary section:
-            // [D:4 bytes] then for each entry: [id:2 bytes][len:2 bytes][bytes...]
             uint32_t dict_count = D;
             dict_buf.write(reinterpret_cast<const char*>(&dict_count), 4);
 
-            // Reverse mapping: id -> string
             std::vector<std::string> reverse(D);
             for (const auto& [str, id] : mapping) {
                 reverse[id] = str;
@@ -229,10 +216,7 @@ bool write_column(const std::string& dir,
             break;
         }
 
-        // ── Run-Length Encoding ──────────────────────────────────────────
         case Encoding::RLE: {
-            // Scan runs and write (value, run_length) pairs
-            // For each run: write the value, then 4-byte count
             for (size_t i = 0; i < values.size(); ) {
                 size_t j = i + 1;
                 while (j < values.size() && compare_values(values[j], values[i]) == 0) {
@@ -240,7 +224,6 @@ bool write_column(const std::string& dir,
                 }
                 uint32_t run_count = static_cast<uint32_t>(j - i);
 
-                // Write the value
                 const auto& val = values[i];
                 switch (meta.type) {
                     case DataType::INT32: {
@@ -258,10 +241,9 @@ bool write_column(const std::string& dir,
                         data_buf.write(reinterpret_cast<const char*>(&v), 8);
                         break;
                     }
-                    default: break;  // RLE only for numerics
+                    default: break;
                 }
 
-                // Write run count
                 data_buf.write(reinterpret_cast<const char*>(&run_count), 4);
                 i = j;
             }
@@ -271,7 +253,6 @@ bool write_column(const std::string& dir,
 
     std::string data_str = data_buf.str();
 
-    // Write header
     ColHeader hdr{};
     std::memcpy(hdr.magic, COL_MAGIC, 4);
     hdr.version   = COL_VERSION;
@@ -297,8 +278,6 @@ bool write_column(const std::string& dir,
     return true;
 }
 
-// ── Reader (full load) ────────────────────────────────────────────────────────
-
 bool read_column(const std::string& dir,
                  const ColumnMeta& meta,
                  std::vector<Value>& out) {
@@ -322,10 +301,8 @@ bool read_column(const std::string& dir,
 
     out.reserve(hdr.row_count);
 
-    // Handle dictionary encoding
     std::vector<std::string> dict_reverse;
     if (enc == Encoding::DICT) {
-        // Seek to dictionary: after header + data_size
         f.seekg(sizeof(ColHeader) + hdr.data_size);
         uint32_t dict_count;
         f.read(reinterpret_cast<char*>(&dict_count), 4);
@@ -339,61 +316,49 @@ bool read_column(const std::string& dir,
             f.read(s.data(), len);
             dict_reverse[id16] = std::move(s);
         }
-        // Seek back to data section
         f.seekg(sizeof(ColHeader));
     }
 
-    // Determine ID width for dictionary
     uint32_t dict_count = static_cast<uint32_t>(dict_reverse.size());
     bool use_1byte = (dict_count <= 256);
 
-    // Read values
-    for (uint64_t i = 0; i < hdr.row_count; ++i) {
-        Value v;
-        switch (enc) {
-            case Encoding::NONE: {
-                switch (dtype) {
-                    case DataType::INT32:  { int32_t x;  read_pod(f, x); v = x; break; }
-                    case DataType::INT64:  { int64_t x;  read_pod(f, x); v = x; break; }
-                    case DataType::DOUBLE: { double x;   read_pod(f, x); v = x; break; }
-                    case DataType::STRING: {
-                        uint16_t len; read_pod(f, len);
-                        std::string s(len, '\0');
-                        f.read(s.data(), len);
-                        v = std::move(s);
-                        break;
+    if (enc != Encoding::RLE) {
+        for (uint64_t i = 0; i < hdr.row_count; ++i) {
+            Value v;
+            switch (enc) {
+                case Encoding::NONE: {
+                    switch (dtype) {
+                        case DataType::INT32:  { int32_t x;  read_pod(f, x); v = x; break; }
+                        case DataType::INT64:  { int64_t x;  read_pod(f, x); v = x; break; }
+                        case DataType::DOUBLE: { double x;   read_pod(f, x); v = x; break; }
+                        case DataType::STRING: {
+                            uint16_t len; read_pod(f, len);
+                            std::string s(len, '\0');
+                            f.read(s.data(), len);
+                            v = std::move(s);
+                            break;
+                        }
                     }
+                    break;
                 }
-                break;
-            }
-
-            case Encoding::DICT: {
-                uint32_t id = 0;
-                if (use_1byte) {
-                    uint8_t b; read_pod(f, b); id = b;
-                } else {
-                    uint16_t w; read_pod(f, w); id = w;
+                case Encoding::DICT: {
+                    uint32_t id = 0;
+                    if (use_1byte) {
+                        uint8_t b; read_pod(f, b); id = b;
+                    } else {
+                        uint16_t w; read_pod(f, w); id = w;
+                    }
+                    v = dict_reverse[id];
+                    break;
                 }
-                v = dict_reverse[id];
-                break;
+                default: break;
             }
-
-            case Encoding::RLE: {
-                // RLE is expanded on first call; subsequent calls reuse until run ends
-                // We use static state — simpler: expand all at load time
-                break;  // handled below
-            }
-        }
-
-        if (enc != Encoding::RLE) {
             out.push_back(v);
         }
     }
 
-    // Handle RLE: read pairs and expand
     if (enc == Encoding::RLE) {
         f.seekg(sizeof(ColHeader));
-        out.clear();
         uint64_t rows_read = 0;
         while (rows_read < hdr.row_count) {
             Value v;
@@ -415,13 +380,9 @@ bool read_column(const std::string& dir,
     return true;
 }
 
-// ── Scanner (streaming callback) ─────────────────────────────────────────────
-
 bool scan_column(const std::string& dir,
                  const ColumnMeta& meta,
                  std::function<bool(uint64_t, const Value&)> callback) {
-    // For simplicity, just load everything and callback.
-    // A proper streaming version would decode on the fly.
     std::vector<Value> vals;
     if (!read_column(dir, meta, vals)) return false;
     for (uint64_t i = 0; i < vals.size(); ++i) {

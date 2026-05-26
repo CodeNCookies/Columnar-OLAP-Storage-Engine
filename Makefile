@@ -1,7 +1,8 @@
 CXX      := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Iinclude
 
-SRC := src/csv_parser.cpp src/schema.cpp src/column_rw.cpp src/query.cpp src/loader.cpp
+SRC := src/csv_parser.cpp src/schema.cpp src/column_rw.cpp \
+       src/query.cpp src/loader.cpp src/row_store.cpp
 
 .PHONY: all clean test test2
 
